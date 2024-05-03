@@ -28,6 +28,7 @@ def gmlLinearRing2wkt(ring, dim):
     assert len(coord) >= 4
     return f"("+",".join([" ".join(c) for c in coord])+")"
 
+
 def gmlPolygon2wkt(poly, dim):
     dim = int(poly.get("srsDimension")) if poly.get("srsDimension") else dim
     rings = [_f for _f in [gmlLinearRing2wkt(ring, dim) \
@@ -38,54 +39,28 @@ def gmlPolygon2wkt(poly, dim):
         return None
     return f"({','.join(rings)})"
 
-def findNamespaceFor(elmentName, root):
-    for e in root.iter():
-        if e.tag is etree.Comment:
-            continue
-        m = re.match(r"(.*)"+elmentName, e.tag) if e.tag else None
-        if m:
-            return m.groups()[0]
-    return None
-
-def fullName(elmentName, root):
-    namespace = findNamespaceFor(elmentName, root)
-    return namespace+elmentName if namespace else None
-
-def buildingGeomTypes(root, lods=[0, 1, 2, 3]):
-    types = set()
-    name = fullName('Building', root)
-    if not name:
-        return types
-    for building in root.iter(name):
-        for geom_type in ['Solid', 'MultiSurface', 'CompositeSurface']:
-            for lod in lods :
-                type_ = fullName('lod'+str(lod)+geom_type, building)
-                if type_:
-                   types.add(type_)
-    return types
-
 
 def citygml2pgsql(filename, conf, args):
-    if not filename.exists():
-      raise RuntimeError("error: cannot find "+filename)
+    try:
+      root = etree.parse(filename)
+    except etree.XMLSyntaxError as e:
+      print(f'XML Error in {filename}!')
+      print(e)
 
-    root = etree.parse(filename)
     #generate a multipolygon surface per building
-    geom_types = buildingGeomTypes(root, [int(args.lod[-1])])
-    num_inserts = 0
-
+    geometry_types = ['{*}'+args.lod+geom_type for geom_type in ['Solid', 'MultiSurface', 'CompositeSurface']]
     tuples = []
-    for building in root.iter(fullName("Building", root)):
+    for building in root.iter("{*}Building"):
       try:
         building_id = building.attrib["{http://www.opengis.net/gml}id"]
       except KeyError:
         pass
       building_polys = []
-      for geom_type in geom_types:
+      for geom_type in geometry_types:
           for geom in building.iter(geom_type):
               dim = int(geom.get("srsDimension")) if geom.get("srsDimension") else None
               polys = [_f for _f in [gmlPolygon2wkt(poly, dim) \
-                            for poly in geom.iter(fullName("Polygon", building))] if _f]
+                            for poly in geom.iter("{*}Polygon")] if _f]
               building_polys = building_polys + polys
       if len(building_polys) == 0:
         # Panic/Saxony mode, collect all <bldg:WallSurface> and <bldg:RoofSurface> nodes as a last resort...
@@ -93,7 +68,7 @@ def citygml2pgsql(filename, conf, args):
           for geom in building.iter(geom_type):
               dim = int(geom.get("srsDimension")) if geom.get("srsDimension") else None
               polys = [_f for _f in [gmlPolygon2wkt(poly, dim) \
-                            for poly in geom.iter(fullName("Polygon", building))] if _f]
+                            for poly in geom.iter("{*}Polygon")] if _f]
               building_polys = building_polys + polys
 
       if len(building_polys) != 0:
@@ -103,18 +78,18 @@ def citygml2pgsql(filename, conf, args):
           'filename': filename.name,
           'geom': geom_str
         })
-    # conn = psycopg2.connect(database=conf.db.database, host=conf.db.host, port=conf.db.port)
-    # cur = conn.cursor()
+    conn = psycopg2.connect(database=conf.db.database, host=conf.db.host, port=conf.db.port)
+    cur = conn.cursor()
 
-    # execute_batch(cur,
-    #   f'INSERT INTO {config.db.table} ({config.columns.id}, {config.columns.filename}, {config.columns.geometry}) '
-    #   f'VALUES (%(id)s, %(filename)s, ST_Transform(%(geom)s, {config.target_srs})) '
-    #   f'ON CONFLICT ({config.columns.id}) DO UPDATE SET '
-    #   f'{config.columns.geometry}=EXCLUDED.{config.columns.geometry}, {config.columns.filename}=EXCLUDED.{config.columns.filename}',
-    #   tuples
-    # )
+    execute_batch(cur,
+      f'INSERT INTO {config.db.table} ({config.columns.id}, {config.columns.filename}, {config.columns.geometry}) '
+      f'VALUES (%(id)s, %(filename)s, ST_Transform(%(geom)s, {config.target_srs})) '
+      f'ON CONFLICT ({config.columns.id}) DO UPDATE SET '
+      f'{config.columns.geometry}=EXCLUDED.{config.columns.geometry}, {config.columns.filename}=EXCLUDED.{config.columns.filename}',
+      tuples
+    )
 
-    # conn.commit()
+    conn.commit()
     return len(tuples)
 
 
@@ -135,13 +110,12 @@ if __name__ == '__main__':
     all_files = list(args.base_path.glob('**/*.xml'))
   print(f'Found {len(all_files)} files')
 
-  # conn = psycopg2.connect(database=config.db.database, host=config.db.host, port=config.db.port)
-  # cur = conn.cursor()
-  # cur.execute('select distinct filename from buildings;')
-  # already_read = set(i for i, in cur)
-  # conn.close()
+  conn = psycopg2.connect(database=config.db.database, host=config.db.host, port=config.db.port)
+  cur = conn.cursor()
+  cur.execute('select distinct filename from buildings;')
+  already_read = set(i for i, in cur)
+  conn.close()
 
-  already_read = set()
   files = [f for f in all_files if f.name not in already_read]
   print(f'Skipping {len(all_files) - len(files)} files that were already processed')
 
@@ -150,10 +124,7 @@ if __name__ == '__main__':
     return filename, count
 
   total = 0
-  # progress = tqdm(pl.map(process_file, files, workers=8), total=len(files))
-  files = files[:10]
-  progress = tqdm(map(process_file, files), total=len(files))
+  progress = tqdm(pl.map(process_file, files, workers=8), total=len(files))
   for (filename, count) in progress:
     total += count
     progress.set_description(f'Processing {filename.name} Total bldgs: {total}')
-
