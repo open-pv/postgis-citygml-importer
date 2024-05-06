@@ -11,6 +11,7 @@ from pathlib import Path
 from tqdm import tqdm
 import pypeln.process as pl
 from munch import munchify
+from subprocess import check_output
 
 
 def gmlLinearRing2wkt(ring, dim):
@@ -22,8 +23,7 @@ def gmlLinearRing2wkt(ring, dim):
     if coord[0] != coord[-1]:
         coord.append(coord[0]) # close ring if not closed
     if len(coord) < 4:
-        print( 'degenerated LinearRing gml:id="'+\
-                ring.get("{http://www.opengis.net/gml}id")+'"\n')
+        print('degenerated LinearRing gml:id="' + ring.get("{http://www.opengis.net/gml}id"))
         return None
     assert len(coord) >= 4
     return f"("+",".join([" ".join(c) for c in coord])+")"
@@ -34,10 +34,13 @@ def gmlPolygon2wkt(poly, dim):
     rings = [_f for _f in [gmlLinearRing2wkt(ring, dim) \
             for ring in poly.iter("{http://www.opengis.net/gml}LinearRing") ] if _f]
     if not rings:
-        print( 'degenerated Polygon gml:id="'+\
-                poly.get("{http://www.opengis.net/gml}id")+'"\n')
+        print('degenerated Polygon gml:id="' + poly.get("{http://www.opengis.net/gml}id"))
         return None
     return f"({','.join(rings)})"
+
+
+def md5sum(path):
+  return check_output(['md5sum', path]).decode().split(' ')[0]
 
 
 def citygml2pgsql(filename, conf, args):
@@ -46,6 +49,7 @@ def citygml2pgsql(filename, conf, args):
     except etree.XMLSyntaxError as e:
       print(f'XML Error in {filename}!')
       print(e)
+      return 0
 
     #generate a multipolygon surface per building
     geometry_types = ['{*}'+args.lod+geom_type for geom_type in ['Solid', 'MultiSurface', 'CompositeSurface']]
@@ -89,11 +93,15 @@ def citygml2pgsql(filename, conf, args):
       tuples
     )
 
+    cur.execute('INSERT INTO imports (filename, md5sum, count) values (%s, %s, %s)',
+      (filename.name, md5sum(filename), len(tuples))
+    )
+
     conn.commit()
     return len(tuples)
 
 
-if __name__ == '__main__':
+def main():
   with open('config.yaml', 'r') as f:
     config = munchify(yaml.safe_load(f))
 
@@ -103,21 +111,25 @@ if __name__ == '__main__':
   parser.add_argument('lod', type=str, choices=['lod1', 'lod2', 'lod3', 'lod4'], default='lod2')
   args = parser.parse_args()
 
-  print(f'Starting import for {args.base_path}')
+  print()
+  print(f'==== Starting import for {args.base_path} ====')
 
   all_files = list(args.base_path.glob('**/*.gml'))
   if not all_files:
     all_files = list(args.base_path.glob('**/*.xml'))
-  print(f'Found {len(all_files)} files')
 
   conn = psycopg2.connect(database=config.db.database, host=config.db.host, port=config.db.port)
   cur = conn.cursor()
-  cur.execute('select distinct filename from buildings;')
+  cur.execute('select filename from imports;')
   already_read = set(i for i, in cur)
   conn.close()
 
   files = [f for f in all_files if f.name not in already_read]
-  print(f'Skipping {len(all_files) - len(files)} files that were already processed')
+  if not files:
+    print(f'Nothing to do -- all files imported already!')
+    return
+
+  print(f'Importing {len(files)} files (Skipping {len(all_files) - len(files)} files that were already imported)')
 
   def process_file(filename):
     count = citygml2pgsql(filename, config, args)
@@ -128,3 +140,7 @@ if __name__ == '__main__':
   for (filename, count) in progress:
     total += count
     progress.set_description(f'Processing {filename.name} Total bldgs: {total}')
+
+
+if __name__ == '__main__':
+  main()

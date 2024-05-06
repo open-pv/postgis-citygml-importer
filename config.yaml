@@ -3,6 +3,7 @@ db:
   port: 5432
   database: openpv-test
   table: buildings
+  imports_table: imports
 columns:
   id: id
   geometry: lod2
