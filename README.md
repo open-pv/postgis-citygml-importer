@@ -37,7 +37,7 @@ Our work was funded by BMBF Prototype Fund:
 Forked from https://gitlab.com/Oslandia/citygml2pgsql. Original Credits:
 
 > This plugin has been developed by Oslandia ( http://www.oslandia.com ).
-
+>
 > First release was funded by European Union (FEDER related to the e-PLU project) and by Oslandia.
 
 License
