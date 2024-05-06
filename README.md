@@ -1,95 +1,48 @@
-A CityGML to SQL converter
+A PostGIS importer for CityGML data
 ==========================
 
 citygml2pgsql converts buildings found in a CityGML file to MultiPolygon insert statements aimed at PosgresSQL/PostGIS.
 
+
+Schema
+======
+```
+CREATE TABLE buildings (id TEXT PRIMARY KEY, filename TEXT, lod2 GEOMETRY(MultipolygonZ, 3857));
+CREATE TABLE imports (filename TEXT, md5sum CHAR(32), count INTEGER);
+```
+
+
 Usage
 ======
+Configure database, column names and target SRS in `config.yaml`.
+
+Then, run
 
 ```
-citygml2pgsql -l mycity.xml
+python citygml2pgsql.py <input_folder> <input_srs> <lod> 
+# e.g.
+python citygml2pgsql.py data/gml_files/ 25832 lod2
 ```
-
-Will list the LOD-qualified geometry types found for buildings, several LODs can be present.
-
-```
-citygml2pgsql mycity.xml LOD SRID GEOMETRY_COLUMN ID_COLUMN TABLE_NAME
-```
-
-Will generate on stdout a serie of insert statements of MultiPolygon in column GEOMETRY_COLUMN of table TABLE_NAME along with the building's id in column ID_COLUMN, one insert per building. The table must exist prior to insertion.
-
-The LOD (in [0,1,2,3]) is mandatory and must match one of the LODs displayed with the ```-l``` option.
-
-The SRID must match the one of the GEOMETRY_COLUMN defined in postgis.
-
-Tutorial
-========
-
-Get the script:
-```
-git clone citygml2pgsql
-cd citygml2pgsql
-```
-
-Get some CityGML files:
-```
-wget http://www.citygml.org/fileadmin/count.php?f=fileadmin%2Fcitygml%2Fdocs%2FBerlin_Alexanderplatz_v1.0.0.zip
-wget http://www.citygml.org/fileadmin/count.php?f=fileadmin%2Fcitygml%2Fdocs%2FKreuz_Leverkusen_2008-03-05.zip
-wget https://download.data.grandlyon.com/files/grandlyon/localisation/bati3d/LYON_1ER_2012.zip
-unzip *Berlin_Alexanderplatz*.zip
-unzip *Kreuz_Leverkusen*.zip
-unzip LYON_1ER_2012.zip
-```
-
-Have a look at what we have:
-```
-./citygml2pgsql.py -l LYON_1ER_2012/LYON_1ER_BATI_REMARQUABLE_2012.gml Berlin_Alexanderplatz_v1.0.0.xml Kreuz_Leverkusen_2008-03-05/080305SIG3D_Building_Levkreuz.xml
-```
-
-will give us:
-```
-In LYON_1ER_2012/LYON_1ER_BATI_REMARQUABLE_2012.gml
-    found reference to EPSG:3946
-    found geometries lod2MultiSurface
-In Berlin_Alexanderplatz_v1.0.0.xml
-    found reference to urn:ogc:def:crs,crs:EPSG:6.12:3068,crs:EPSG:6.12:5783
-    found geometries lod2Solid
-In Kreuz_Leverkusen_2008-03-05/080305SIG3D_Building_Levkreuz.xml
-    found reference to EPSG:31466
-    found geometries lod1Solid
-```
-
-Now we have the information we need to create our tables in a test database:
-```
-createdb test_citygml
-psql test_citygml -c "CREATE EXTENSION postgis"
-psql test_citygml -c "CREATE TABLE lyon(gid SERIAL PRIMARY KEY, building_id varchar(255), geom GEOMETRY('MULTIPOLYGONZ', 3946))"
-psql test_citygml -c "CREATE TABLE levkreuz(gid SERIAL PRIMARY KEY, building_id varchar(255), geom GEOMETRY('MULTIPOLYGONZ', 31466))"
-psql test_citygml -c "CREATE TABLE berlin(gid SERIAL PRIMARY KEY, building_id varchar(255), geom GEOMETRY('MULTIPOLYGONZ', 3068))"
-```
-
-And we can populate our tables:
-```
-./citygml2pgsql.py LYON_1ER_2012/LYON_1ER_BATI_REMARQUABLE_2012.gml 2 3946 geom building_id lyon | psql test_citygml
-./citygml2pgsql.py Kreuz_Leverkusen_2008-03-05/080305SIG3D_Building_Levkreuz.xml 1 31466 geom building_id levkreuz | psql test_citygml
-./citygml2pgsql.py Berlin_Alexanderplatz_v1.0.0.xml 2 3068 geom building_id berlin | psql test_citygml
-
-```
-
-That's it!
 
 
 Credits
 =======
 
-This plugin has been developed by Oslandia ( http://www.oslandia.com ).
+Our work was funded by BMBF Prototype Fund:
 
-First release was funded by European Union (FEDER related to the e-PLU project) and by Oslandia.
+<a href="https://prototypefund.de/">
+  <img src='https://github.com/open-pv/.github/assets/74312290/9dfa1ce4-adaf-4638-9cbc-e519b033331b' width='300'>
+</a>
+
+Forked from https://gitlab.com/Oslandia/citygml2pgsql. Original Credits:
+
+> This plugin has been developed by Oslandia ( http://www.oslandia.com ).
+
+> First release was funded by European Union (FEDER related to the e-PLU project) and by Oslandia.
 
 License
 =======
 
 This work is free software and licenced under the MIT licence.
 See LICENSE file.
-
 
