@@ -86,10 +86,10 @@ def citygml2pgsql(filename, conf, args):
     cur = conn.cursor()
 
     execute_batch(cur,
-      f'INSERT INTO {config.db.table} ({config.columns.id}, {config.columns.filename}, {config.columns.geometry}) '
-      f'VALUES (%(id)s, %(filename)s, ST_Transform(%(geom)s, {config.target_srs})) '
-      f'ON CONFLICT ({config.columns.id}) DO UPDATE SET '
-      f'{config.columns.geometry}=EXCLUDED.{config.columns.geometry}, {config.columns.filename}=EXCLUDED.{config.columns.filename}',
+      f'INSERT INTO {conf.db.table} ({conf.columns.id}, {conf.columns.filename}, {conf.columns.geometry}) '
+      f'VALUES (%(id)s, %(filename)s, ST_Transform(%(geom)s, {conf.target_srs})) '
+      f'ON CONFLICT ({conf.columns.id}) DO UPDATE SET '
+      f'{conf.columns.geometry}=EXCLUDED.{conf.columns.geometry}, {conf.columns.filename}=EXCLUDED.{conf.columns.filename}',
       tuples
     )
 
