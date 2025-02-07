@@ -1,0 +1,36 @@
+[project]
+name = "citygml2pgsql"
+version = "0.1.0"
+description = "Add your description here"
+authors = [
+    { name = "Konrad Heidler", email = "k.heidler@tum.de" }
+]
+dependencies = [
+    "lxml>=5.2.1",
+    "pyyaml>=6.0.1",
+    "tqdm>=4.66.2",
+    "munch>=4.0.0",
+    "psycopg2>=2.9.9",
+    "pypeln>=0.4.9",
+    "setuptools>=69.5.1",
+    "shapely>=2.0.6",
+]
+readme = "README.md"
+requires-python = ">= 3.11"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.rye]
+managed = true
+dev-dependencies = [
+    "ipython>=8.24.0",
+    "snakeviz>=2.2.0",
+]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/citygml2pgsql"]

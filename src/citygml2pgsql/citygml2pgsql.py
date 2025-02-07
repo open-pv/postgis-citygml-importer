@@ -1,7 +1,6 @@
 #!/usr/bin/python
 # coding: utf-8
 
-import re
 from lxml import etree
 import yaml
 import psycopg2
@@ -12,6 +11,7 @@ from tqdm import tqdm
 import pypeln.process as pl
 from munch import munchify
 from subprocess import check_output
+import shapely as shp
 
 
 def gmlLinearRing2wkt(ring, dim, swap_axes):
@@ -109,8 +109,41 @@ def citygml2pgsql(filename, conf, args):
           building_polys = building_polys + polys
 
     if len(building_polys) != 0:
-      geom_str = f"SRID={args.srid}; MULTIPOLYGON({','.join(building_polys)})"
-      tuples.append({"id": building_id, "filename": filename.name, "geom": geom_str})
+      multipoly_wkt = f"MULTIPOLYGON({','.join(building_polys)})"
+      geom_str = f"SRID={args.srid}; {multipoly_wkt}"
+
+      # Compute footprint
+      polys = []
+      for poly in building_polys:
+        poly = shp.from_wkt(f"POLYGON{poly}")
+        poly = shp.force_2d(poly)
+        if shp.is_valid(poly):
+          polys.append(poly)
+      if len(polys) > 0:
+        footprint = None
+        try:
+          footprint = shp.unary_union(polys)
+        except shp.errors.GEOSException as e:
+          print(
+            "Weird edge case in Saxony caught by dividing unary union in 3 steps..."
+          )
+          a = shp.unary_union(polys[:5])
+          b = shp.unary_union(polys[5:])
+          footprint = shp.unary_union([a, b])
+        if isinstance(footprint, shp.Polygon):
+          footprint = shp.MultiPolygon([footprint])
+        footprint_str = f"SRID={args.srid}; {shp.to_wkt(footprint)}"
+      else:
+        footprint_str = f"SRID={args.srid}; MULTIPOLYGON EMPTY"
+
+      tuples.append(
+        {
+          "id": building_id,
+          "filename": filename.name,
+          "geom": geom_str,
+          "footprint": footprint_str,
+        }
+      )
   conn = psycopg2.connect(
     database=conf.db.database, host=conf.db.host, port=conf.db.port
   )
@@ -118,16 +151,23 @@ def citygml2pgsql(filename, conf, args):
 
   execute_batch(
     cur,
-    f"INSERT INTO {conf.db.table} ({conf.columns.id}, {conf.columns.filename}, {conf.columns.geometry}) "
-    f"VALUES (%(id)s, %(filename)s, ST_Transform(%(geom)s, {conf.target_srs})) "
+    f"INSERT INTO {conf.db.table} ({conf.columns.id}, {conf.columns.filename}, {conf.columns.geometry}, {conf.columns.footprint}) "
+    f"VALUES (%(id)s, %(filename)s, ST_Transform(%(geom)s, {conf.target_srs}), ST_Transform(%(footprint)s, {conf.target_srs}))"
     f"ON CONFLICT ({conf.columns.id}) DO UPDATE SET "
-    f"{conf.columns.geometry}=EXCLUDED.{conf.columns.geometry}, {conf.columns.filename}=EXCLUDED.{conf.columns.filename}",
+    f"{conf.columns.geometry}=EXCLUDED.{conf.columns.geometry}, "
+    f"{conf.columns.footprint}=EXCLUDED.{conf.columns.footprint}, "
+    f"{conf.columns.filename}=EXCLUDED.{conf.columns.filename}; ",
     tuples,
   )
 
   cur.execute(
-    "INSERT INTO imports (filename, md5sum, count) values (%s, %s, %s)",
-    (filename.name, md5sum(filename), len(tuples)),
+    "INSERT INTO imports (filename, md5sum, count, bundesland) values (%s, %s, %s, %s)",
+    (
+      filename.name,
+      md5sum(filename),
+      len(tuples),
+      args.bundesland,
+    ),
   )
 
   conn.commit()
@@ -147,6 +187,7 @@ def main():
   parser.add_argument(
     "--swap-axes", dest="swap_axes", action=argparse.BooleanOptionalAction
   )
+  parser.add_argument("--bundesland", type=str, default="")
   args = parser.parse_args()
 
   print()
@@ -166,7 +207,7 @@ def main():
 
   files = [f for f in all_files if f.name not in already_read]
   if not files:
-    print(f"Nothing to do -- all files imported already!")
+    print("Nothing to do -- all files imported already!")
     return
 
   print(
@@ -178,7 +219,7 @@ def main():
     return filename, count
 
   total = 0
-  progress = tqdm(pl.map(process_file, files, workers=8), total=len(files))
+  progress = tqdm(pl.map(process_file, files, workers=24), total=len(files))
   for filename, count in progress:
     total += count
     progress.set_description(f"Processing {filename.name} Total bldgs: {total}")
