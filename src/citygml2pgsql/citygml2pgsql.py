@@ -80,9 +80,11 @@ def citygml2pgsql(filename, conf, args):
   tuples = []
   for building in root.iter("{*}Building"):
     building_id = get_attrib_no_matter_the_namespace(building, "id")
-    building_polys = []
-    for geom_type in geometry_types:
-      for geom in building.iter(geom_type):
+    polygons = {}
+    polygons_wkt = {}
+    for surf_type in ["Wall", "Roof", "Ground"]:
+      polygons[surf_type] = []
+      for geom in building.iter(f"{{*}}{surf_type}Surface"):
         dim = int(geom.get("srsDimension")) if geom.get("srsDimension") else None
         polys = [
           _f
@@ -92,58 +94,46 @@ def citygml2pgsql(filename, conf, args):
           ]
           if _f
         ]
-        building_polys = building_polys + polys
-    if len(building_polys) == 0:
-      # Panic/Saxony mode, collect all <bldg:WallSurface> and <bldg:RoofSurface> nodes as a last resort...
-      for geom_type in ["bldg:WallSurface", "bldg:RoofSurface"]:
-        for geom in building.iter(geom_type):
-          dim = int(geom.get("srsDimension")) if geom.get("srsDimension") else None
-          polys = [
-            _f
-            for _f in [
-              gmlPolygon2wkt(poly, dim, swap_axes=args.swap_axes)
-              for poly in geom.iter("{*}Polygon")
-            ]
-            if _f
-          ]
-          building_polys = building_polys + polys
-
-    if len(building_polys) != 0:
-      multipoly_wkt = f"MULTIPOLYGON({','.join(building_polys)})"
-      geom_str = f"SRID={args.srid}; {multipoly_wkt}"
-
-      # Compute footprint
-      polys = []
-      for poly in building_polys:
-        poly = shp.from_wkt(f"POLYGON{poly}")
-        poly = shp.force_2d(poly)
-        if shp.is_valid(poly):
-          polys.append(poly)
-      if len(polys) > 0:
-        footprint = None
-        try:
-          footprint = shp.unary_union(polys)
-        except shp.errors.GEOSException as e:
-          print(
-            "Weird edge case in Saxony caught by dividing unary union in 3 steps..."
-          )
-          a = shp.unary_union(polys[:5])
-          b = shp.unary_union(polys[5:])
-          footprint = shp.unary_union([a, b])
-        if isinstance(footprint, shp.Polygon):
-          footprint = shp.MultiPolygon([footprint])
-        footprint_str = f"SRID={args.srid}; {shp.to_wkt(footprint)}"
+        polygons[surf_type] += polys
+      if polygons[surf_type]:
+        multipoly_wkt = f"MULTIPOLYGON({','.join(polygons[surf_type])})"
+        polygons_wkt[surf_type] = f"SRID={args.srid}; {multipoly_wkt}"
       else:
-        footprint_str = f"SRID={args.srid}; MULTIPOLYGON EMPTY"
+        polygons_wkt[surf_type] = f"SRID={args.srid}; MULTIPOLYGONZ EMPTY"
 
-      tuples.append(
-        {
-          "id": building_id,
-          "filename": filename.name,
-          "geom": geom_str,
-          "footprint": footprint_str,
-        }
-      )
+    # Compute footprint
+    polys = []
+    for poly in polygons["Ground"]:
+      poly = shp.from_wkt(f"POLYGON{poly}")
+      poly = shp.force_2d(poly)
+      if shp.is_valid(poly):
+        polys.append(poly)
+    if polys:
+      footprint = None
+      try:
+        footprint = shp.unary_union(polys)
+      except shp.errors.GEOSException as e:
+        print("Weird edge case in Saxony caught by dividing unary union in 3 steps...")
+        a = shp.unary_union(polys[:5])
+        b = shp.unary_union(polys[5:])
+        footprint = shp.unary_union([a, b])
+      if isinstance(footprint, shp.Polygon):
+        footprint = shp.MultiPolygon([footprint])
+      footprint_str = f"SRID={args.srid}; {shp.to_wkt(footprint)}"
+    else:
+      footprint_str = f"SRID={args.srid}; MULTIPOLYGON EMPTY"
+
+    tuples.append(
+      {
+        "id": building_id,
+        "filename": filename.name,
+        "roof": polygons_wkt["Roof"],
+        "wall": polygons_wkt["Wall"],
+        "ground": polygons_wkt["Ground"],
+        "footprint": footprint_str,
+        "bl": args.bundesland,
+      }
+    )
   conn = psycopg2.connect(
     database=conf.db.database, host=conf.db.host, port=conf.db.port
   )
@@ -151,12 +141,20 @@ def citygml2pgsql(filename, conf, args):
 
   execute_batch(
     cur,
-    f"INSERT INTO {conf.db.table} ({conf.columns.id}, {conf.columns.filename}, {conf.columns.geometry}, {conf.columns.footprint}) "
-    f"VALUES (%(id)s, %(filename)s, ST_Transform(%(geom)s, {conf.target_srs}), ST_Transform(%(footprint)s, {conf.target_srs}))"
+    f"INSERT INTO {conf.db.table} ({conf.columns.id}, {conf.columns.filename}, {conf.columns.roof}, {conf.columns.wall}, {conf.columns.ground}, {conf.columns.footprint}, bl) "
+    f"VALUES (%(id)s, %(filename)s, "
+    f"ST_Transform(%(roof)s, {conf.target_srs}), "
+    f"ST_Transform(%(wall)s, {conf.target_srs}), "
+    f"ST_Transform(%(ground)s, {conf.target_srs}), "
+    f"ST_Transform(%(footprint)s, {conf.target_srs}), "
+    f"%(bl)s) "
     f"ON CONFLICT ({conf.columns.id}) DO UPDATE SET "
-    f"{conf.columns.geometry}=EXCLUDED.{conf.columns.geometry}, "
+    f"{conf.columns.roof}=EXCLUDED.{conf.columns.roof}, "
+    f"{conf.columns.wall}=EXCLUDED.{conf.columns.wall}, "
+    f"{conf.columns.ground}=EXCLUDED.{conf.columns.ground}, "
     f"{conf.columns.footprint}=EXCLUDED.{conf.columns.footprint}, "
-    f"{conf.columns.filename}=EXCLUDED.{conf.columns.filename}; ",
+    f"{conf.columns.filename}=EXCLUDED.{conf.columns.filename}, "
+    f"bl=EXCLUDED.bl;",
     tuples,
   )
 
@@ -220,6 +218,7 @@ def main():
 
   total = 0
   progress = tqdm(pl.map(process_file, files, workers=24), total=len(files))
+  # progress = tqdm(map(process_file, files), total=len(files))
   for filename, count in progress:
     total += count
     progress.set_description(f"Processing {filename.name} Total bldgs: {total}")

@@ -1,12 +1,14 @@
 db:
   host: localhost
   port: 5432
-  database: openpv-test
+  database: openpv
   table: buildings
   imports_table: imports
 columns:
   id: id
-  geometry: lod2
+  roof: roof
+  wall: wall
+  ground: ground
   filename: filename
   footprint: footprint
 target_srs: 3857
