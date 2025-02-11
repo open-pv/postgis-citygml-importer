@@ -12,88 +12,12 @@ import pypeln.process as pl
 from munch import munchify
 import shapely as shp
 
-from .gml_utils import get_attrib_no_matter_the_namespace, gmlPolygon2wkt
+from .gml_utils import get_attrib_no_matter_the_namespace, gmlPolygon2wkt, md5sum
 
 
-def citygml2pgsql(filename, conf, args):
-  try:
-    root = etree.parse(filename)
-  except etree.XMLSyntaxError as e:
-    print(f"XML Error in {filename}!")
-    print(e)
-    return 0
-
-  # generate a multipolygon surface per building
-  geometry_types = [
-    "{*}" + args.lod + geom_type
-    for geom_type in ["Solid", "MultiSurface", "CompositeSurface"]
-  ]
-  # special treatment for Mecklenburg-Vorpommern... :)
-  geometry_types += ["{*}BuildingGeometry3DLoD" + args.lod[-1]]
-  tuples = []
-  for building in root.iter("{*}Building"):
-    building_id = get_attrib_no_matter_the_namespace(building, "id")
-    polygons = {}
-    polygons_wkt = {}
-    for surf_type in ["Wall", "Roof", "Ground"]:
-      polygons[surf_type] = []
-      for geom in building.iter(f"{{*}}{surf_type}Surface"):
-        dim = int(geom.get("srsDimension")) if geom.get("srsDimension") else None
-        polys = [
-          _f
-          for _f in [
-            gmlPolygon2wkt(poly, dim, swap_axes=args.swap_axes)
-            for poly in geom.iter("{*}Polygon")
-          ]
-          if _f
-        ]
-        polygons[surf_type] += polys
-      if polygons[surf_type]:
-        multipoly_wkt = f"MULTIPOLYGON({','.join(polygons[surf_type])})"
-        polygons_wkt[surf_type] = f"SRID={args.srid}; {multipoly_wkt}"
-      else:
-        polygons_wkt[surf_type] = f"SRID={args.srid}; MULTIPOLYGONZ EMPTY"
-
-    # Compute footprint
-    polys = []
-    for poly in polygons["Ground"]:
-      poly = shp.from_wkt(f"POLYGON{poly}")
-      poly = shp.force_2d(poly)
-      if shp.is_valid(poly):
-        polys.append(poly)
-    if polys:
-      footprint = None
-      try:
-        footprint = shp.unary_union(polys)
-      except shp.errors.GEOSException as e:
-        print("Weird edge case in Saxony caught by dividing unary union in 3 steps...")
-        a = shp.unary_union(polys[:5])
-        b = shp.unary_union(polys[5:])
-        footprint = shp.unary_union([a, b])
-      if isinstance(footprint, shp.Polygon):
-        footprint = shp.MultiPolygon([footprint])
-      footprint_str = f"SRID={args.srid}; {shp.to_wkt(footprint)}"
-    else:
-      footprint_str = f"SRID={args.srid}; MULTIPOLYGON EMPTY"
-
-    tuples.append(
-      {
-        "id": building_id,
-        "filename": filename.name,
-        "roof": polygons_wkt["Roof"],
-        "wall": polygons_wkt["Wall"],
-        "ground": polygons_wkt["Ground"],
-        "footprint": footprint_str,
-        "bl": args.bundesland,
-      }
-    )
-  conn = psycopg2.connect(
-    database=conf.db.database, host=conf.db.host, port=conf.db.port
-  )
-  cur = conn.cursor()
-
+def insert_tuples(cursor, tuples, conf):
   execute_batch(
-    cur,
+    cursor,
     f"INSERT INTO {conf.db.table} ({conf.columns.id}, {conf.columns.filename}, {conf.columns.roof}, {conf.columns.wall}, {conf.columns.ground}, {conf.columns.footprint}, bl) "
     f"VALUES (%(id)s, %(filename)s, "
     f"ST_Transform(%(roof)s, {conf.target_srs}), "
@@ -111,17 +35,97 @@ def citygml2pgsql(filename, conf, args):
     tuples,
   )
 
-  cur.execute(
-    "INSERT INTO imports (filename, md5sum, count, bundesland) values (%s, %s, %s, %s)",
-    (
-      filename.name,
-      md5sum(filename),
-      len(tuples),
-      args.bundesland,
-    ),
-  )
 
-  conn.commit()
+def citygml2pgsql(filename, conf, args):
+  try:
+    root = etree.parse(filename)
+  except etree.XMLSyntaxError as e:
+    print(f"XML Error in {filename}!")
+    print(e)
+    return 0
+
+  with psycopg2.connect(
+    database=conf.db.database, host=conf.db.host, port=conf.db.port
+  ) as conn:
+    cur = conn.cursor()
+
+    # generate a multipolygon surface per building part
+    geometry_types = [
+      "{*}" + args.lod + geom_type
+      for geom_type in ["Solid", "MultiSurface", "CompositeSurface"]
+    ]
+    # special treatment for Mecklenburg-Vorpommern... :)
+    geometry_types += ["{*}BuildingGeometry3DLoD" + args.lod[-1]]
+    tuples = []
+    for building in root.iter("{*}Building"):
+      building_id = get_attrib_no_matter_the_namespace(building, "id")
+      polygons = {}
+      polygons_wkt = {}
+      for surf_type in ["Wall", "Roof", "Ground"]:
+        polygons[surf_type] = []
+        for geom in building.iter(f"{{*}}{surf_type}Surface"):
+          dim = int(geom.get("srsDimension")) if geom.get("srsDimension") else None
+          for poly in geom.iter("{*}Polygon"):
+            wkt = gmlPolygon2wkt(poly, dim, swap_axes=args.swap_axes)
+            if wkt:
+              polygons[surf_type].append(wkt)
+        if polygons[surf_type]:
+          multipoly_wkt = f"MULTIPOLYGON({','.join(polygons[surf_type])})"
+          polygons_wkt[surf_type] = f"SRID={args.srid}; {multipoly_wkt}"
+        else:
+          polygons_wkt[surf_type] = f"SRID={args.srid}; MULTIPOLYGONZ EMPTY"
+
+      # Compute footprint
+      polys = []
+      for poly in polygons["Ground"]:
+        poly = shp.from_wkt(f"POLYGON{poly}")
+        poly = shp.force_2d(poly)
+        if shp.is_valid(poly):
+          polys.append(poly)
+      if polys:
+        footprint = None
+        try:
+          footprint = shp.unary_union(polys)
+        except shp.errors.GEOSException as e:
+          print(
+            "Weird edge case in Saxony caught by dividing unary union in 3 steps..."
+          )
+          a = shp.unary_union(polys[:5])
+          b = shp.unary_union(polys[5:])
+          footprint = shp.unary_union([a, b])
+        if isinstance(footprint, shp.Polygon):
+          footprint = shp.MultiPolygon([footprint])
+        footprint_str = f"SRID={args.srid}; {shp.to_wkt(footprint)}"
+      else:
+        footprint_str = f"SRID={args.srid}; MULTIPOLYGON EMPTY"
+
+      tuples.append(
+        {
+          "id": building_id,
+          "filename": filename.name,
+          "roof": polygons_wkt["Roof"],
+          "wall": polygons_wkt["Wall"],
+          "ground": polygons_wkt["Ground"],
+          "footprint": footprint_str,
+          "bl": args.bundesland,
+        }
+      )
+      if len(tuples) >= 100:
+        insert_tuples(cur, tuples, conf)
+        tuples = []
+
+    insert_tuples(cur, tuples, conf)
+    tuples = []
+
+    cur.execute(
+      "INSERT INTO imports (filename, md5sum, count, bundesland) values (%s, %s, %s, %s)",
+      (
+        filename.name,
+        md5sum(filename),
+        len(tuples),
+        args.bundesland,
+      ),
+    )
   return len(tuples)
 
 
