@@ -44,6 +44,8 @@ def citygml2pgsql(filename, conf, args):
     print(e)
     return 0
 
+  n_buildings = 0
+
   with psycopg2.connect(
     database=conf.db.database, host=conf.db.host, port=conf.db.port
   ) as conn:
@@ -110,23 +112,24 @@ def citygml2pgsql(filename, conf, args):
           "bl": args.bundesland,
         }
       )
-      if len(tuples) >= 100:
+      if len(tuples) >= 1024:
         insert_tuples(cur, tuples, conf)
+        n_buildings += len(tuples)
         tuples = []
 
     insert_tuples(cur, tuples, conf)
-    tuples = []
+    n_buildings += len(tuples)
 
     cur.execute(
       "INSERT INTO imports (filename, md5sum, count, bundesland) values (%s, %s, %s, %s)",
       (
         filename.name,
         md5sum(filename),
-        len(tuples),
+        n_buildings,
         args.bundesland,
       ),
     )
-  return len(tuples)
+  return n_buildings
 
 
 def main():
@@ -142,6 +145,7 @@ def main():
   parser.add_argument(
     "--swap-axes", dest="swap_axes", action=argparse.BooleanOptionalAction
   )
+  parser.add_argument("-j", "--threads", dest="threads", type=int, default=24)
   parser.add_argument("--bundesland", type=str, default="")
   args = parser.parse_args()
 
@@ -174,7 +178,7 @@ def main():
     return filename, count
 
   total = 0
-  progress = tqdm(pl.map(process_file, files, workers=24), total=len(files))
+  progress = tqdm(pl.map(process_file, files, workers=args.threads), total=len(files))
   # progress = tqdm(map(process_file, files), total=len(files))
   for filename, count in progress:
     total += count
