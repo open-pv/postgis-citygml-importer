@@ -7,8 +7,23 @@ citygml2pgsql converts buildings found in a CityGML file to MultiPolygon insert 
 Schema
 ======
 ```
-CREATE TABLE buildings (id TEXT PRIMARY KEY, filename TEXT, lod2 GEOMETRY(MultipolygonZ, 3857));
-CREATE TABLE imports (filename TEXT, md5sum CHAR(32), count INTEGER);
+CREATE TABLE public.buildings (
+    id text NOT NULL,
+    filename text,
+    roof public.geometry(MultiPolygonZ,3857),
+    wall public.geometry(MultiPolygonZ,3857),
+    ground public.geometry(MultiPolygonZ,3857),
+    footprint public.geometry(MultiPolygon,3857),
+    bl character(2)
+);
+
+
+CREATE TABLE public.imports (
+    filename text,
+    md5sum character(32),
+    count integer,
+    bundesland text
+);
 ```
 
 
@@ -19,9 +34,9 @@ Configure database, column names and target SRS in `config.yaml`.
 Then, run
 
 ```
-python citygml2pgsql.py <input_folder> <input_srs> <lod> 
+uv run citygml2pgsql <input_folder> <input_srs> <lod> --bundesland bl
 # e.g.
-python citygml2pgsql.py data/gml_files/ 25832 lod2
+uv run citygml2pgsql data/gml_files_bw/ 25832 lod2 --bundesland bw
 ```
 
 

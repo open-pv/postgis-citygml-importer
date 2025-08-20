@@ -8,9 +8,9 @@ from psycopg2.extras import execute_batch
 import argparse
 from pathlib import Path
 from tqdm import tqdm
-import pypeln.process as pl
 from munch import munchify
 import shapely as shp
+from multiprocess import Pool
 
 from .gml_utils import get_attrib_no_matter_the_namespace, gmlPolygon2wkt, md5sum
 
@@ -178,11 +178,12 @@ def main():
     return filename, count
 
   total = 0
-  progress = tqdm(pl.map(process_file, files, workers=args.threads), total=len(files))
-  # progress = tqdm(map(process_file, files), total=len(files))
-  for filename, count in progress:
-    total += count
-    progress.set_description(f"Processing {filename.name} Total bldgs: {total}")
+  with Pool(args.threads) as pool:
+    progress = tqdm(pool.imap(process_file, files), total=len(files))
+
+    for filename, count in progress:
+      total += count
+      progress.set_description(f"Processing {filename.name} Total bldgs: {total}")
 
 
 if __name__ == "__main__":
